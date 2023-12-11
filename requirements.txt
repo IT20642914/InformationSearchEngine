@@ -1,6 +1,5 @@
 openai
 langchain
-
-langchain
 pymilvus
 milvus
+unstructured

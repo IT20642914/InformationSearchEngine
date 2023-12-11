@@ -12,3 +12,6 @@ LangChain is a software framework with higher-level classes and methods for acce
 #Milvus (Vector DB)
 Milvus is a vector database, where the data stored are primarily vector embeddings and data retrieval is done through vector similarity search algorithms, such as ANN (approximate nearest neighbors). Milvus is open-source software with an active and helpful community.
 
+need
+python -m nltk.downloader punkt
+

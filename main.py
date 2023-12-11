@@ -66,10 +66,12 @@ def convert_and_split(text_splitter, file_path: str) -> list:
             texts = text_splitter.split_documents(docs)
 
         elif file_path.endswith('.xlsx') or file_path.endswith('.xls'):
-            loader = UnstructuredExcelLoader(file_path)
-            docs = loader.load()
-            texts = text_splitter.split_documents(docs)
-
+            try:
+                loader = UnstructuredExcelLoader(file_path)
+                docs = loader.load()
+                texts = text_splitter.split_documents(docs)
+            except Exception as e:
+                print(f"Error processing {file_path}: {e}")
         elif file_path.endswith('.csv'):
             loader = CSVLoader(file_path)
             docs = loader.load()
@@ -151,16 +153,25 @@ if __name__ == "__main__":
     file_extensions = ['pdf', 'doc', 'docx', 'xlsx', 'xls', 'ppt', 'pptx', 'txt', 'csv']
     initdir = os.getcwd()
     dir = os.path.join(initdir, 'Files')
-
-    # define a collection name (it can be any name)
-    collection_name='testfiles_repo'
-
-    # visit directory structure and create list of files with given extensions
-    filelst = list_files(dir, file_extensions)
-   
+    try:
+        # Establish a connection to the Milvus server
+        connections.connect(host='localhost', port='19530')
+        print("Successfully connected to Milvus server.")
+        
      
-    # visit all files, convert them to text and index them into Milvus
-    # index_files_milvus(filelst, collection_name)
+        # define a collection name (it can be any name)
+        collection_name='testfiles_repo'
+
+        # visit directory structure and create list of files with given extensions
+        filelst = list_files(dir, file_extensions)
+    
+        
+        # visit all files, convert them to text and index them into Milvus
+        index_files_milvus(filelst, collection_name)
+
+    except exceptions.MilvusException as e:
+        print(f"Failed to connect to Milvus server: {e}")
+
     pass
 
 
