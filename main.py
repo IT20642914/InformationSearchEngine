@@ -3,7 +3,7 @@ import os
 import openai
 
 from langchain.vectorstores import Milvus
-from langchain.embeddings.openai import OpenAIEmbeddings
+
 from langchain.text_splitter import NLTKTextSplitter
 from langchain.document_loaders import TextLoader
 from langchain.document_loaders import UnstructuredExcelLoader
@@ -11,9 +11,44 @@ from langchain.document_loaders import UnstructuredWordDocumentLoader
 from langchain.document_loaders import UnstructuredPowerPointLoader
 from langchain.document_loaders import CSVLoader
 from langchain.document_loaders import PyMuPDFLoader
+import logging
+import colorlog
+from sentence_transformers import SentenceTransformer
 
-from pymilvus import Collection, FieldSchema, CollectionSchema, DataType, connections,db
+from pymilvus import Collection, FieldSchema, CollectionSchema, DataType, connections,exceptions
 
+
+# Create a colored logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+# Create a ColorFormatter for the logger
+formatter = colorlog.ColoredFormatter(
+    '%(log_color)s%(levelname)s: %(message)s',
+    log_colors={
+        'DEBUG': 'cyan',
+        'INFO': 'green',
+        'WARNING': 'yellow',
+        'ERROR': 'red',
+        'CRITICAL': 'bold_red',
+    }
+)
+
+# Create a console handler and set the formatter
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+
+# Add the console handler to the logger
+logger.addHandler(console_handler)
+
+def generate_embeddings(texts,file_path):
+   try: 
+    embedding_model = SentenceTransformer('paraphrase-MiniLM-L6-v2')  # Use any desired pre-trained model
+    embeddings = embedding_model.encode(texts)
+    return embeddings
+   except Exception as e:
+        logger.error(f"Error generating embeddings for {file_path}: {e}")
+        return None
 
 def list_files(initdir: str, file_extensions: list):
     '''
@@ -34,9 +69,9 @@ def list_files(initdir: str, file_extensions: list):
                 file_count[ext] += 1
     
     total = len(file_list)
-    print(f'There are {total} files under dir {initdir}.')
+    logger.info(f'There are {total} files under dir {initdir}.')
     for k, n in file_count.items():
-        print(f'   {n} : ".{k}" files')
+        logger.info(f'   {n} : ".{k}" files')
     return file_list
 
 
@@ -83,12 +118,64 @@ def convert_and_split(text_splitter, file_path: str) -> list:
             texts = text_splitter.split_documents(docs)
 
         else:
-            print(f"Error: invalid file type: {file_path}")
+            logger.error(f"Error: invalid file type: {file_path}")
 
     except Exception as e:
-        print(f"Error processing {file_path}: {e}")
+        logger.error(f"Error processing {file_path}: {e}")
 
     return texts
+def create_collection_schema(collection_name: str):
+    '''
+    Defines a schema for a collection, with 4 fields.
+    '''
+    # define the necessary fields and their types
+    fields = [
+        FieldSchema(name="pk", dtype=DataType.INT64, is_primary=True, auto_id=True),
+        FieldSchema(name="source", dtype=DataType.VARCHAR, max_length=512),
+        FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
+        FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=1536)
+    ]
+
+    # create a collection schema with fields
+    schema = CollectionSchema(
+        fields, 
+        description="Schema for different file types",
+    )
+
+    collection = Collection(collection_name, schema)
+    return collection
+def add_docs_to_milvus(docs, collection_name, file_path):
+    '''
+    Store embedding vectors for docs in Milvus DB, under collection_name.
+    Return vector_db if successful, otherwise return None
+    '''
+    vector_db = None
+
+    logger.info(f"Processing documents for: docs={docs}, , collection_name={collection_name}, file_path={file_path}")
+    try:
+        # Extracting text data from 'Document' objects using the 'page_content' attribute
+        texts = [doc.page_content for doc in docs]
+        
+        # Generate embeddings using the provided function
+        embeddings = generate_embeddings(texts,file_path)
+            
+        vector_db = Milvus.from_embeddings(
+            embeddings=embeddings,
+            collection_name=collection_name,
+            connection_args={"host": "localhost", "port": "19530"},
+        )
+        
+    except Exception as e:
+        logger.error(f"Error storing {file_path} into Milvus: {e}")
+        vector_db = None
+
+    finally:
+        # Flush new entities added to collection.
+        collection = Collection(collection_name)
+        collection.flush()
+        logger.info(f'Collection {collection_name} has {collection.num_entities} entities after processing file {file_path}')
+    
+    return vector_db
 
 def index_files_milvus(filelst: list, collection_name: str):
     '''
@@ -102,13 +189,10 @@ def index_files_milvus(filelst: list, collection_name: str):
     # define the language model to be used for generating the vector embeddings
     # For security reasons, it is better not to pass the API key directly in
     # the code, use an environment variable.
-    # embedding = OpenAIEmbeddings(
-    #     model="text-embedding-ada-002",
-    #     openai_api_key='insert-your-OpenAI-api-key-here'
-    #     )
+
 
     # create a schema and a collection using it
-    # create_collection_schema(collection_name)
+    create_collection_schema(collection_name)
 
     # bookeeping variables
     error_files = []    # list of files that failed
@@ -128,26 +212,39 @@ def index_files_milvus(filelst: list, collection_name: str):
             continue
 
         # now generate embeddings and store texts and vectors into vector database
-        # vector_db = add_docs_to_milvus(texts, embedding, collection_name, file_path)
+        vector_db = add_docs_to_milvus(texts, collection_name, file_path)
 
-        # if not vector_db:
-        #     error_files.append(file_path)   # keep track of files that failed
-        #     cnt -= 1                        # count only successful conversions
-        #     continue
-        # pass   # end of for loop
+        if not vector_db:
+            error_files.append(file_path)   # keep track of files that failed
+            cnt -= 1                        # count only successful conversions
+            continue
+        pass   # end of for loop
 
     # print summary
-    print(f'[index_files] Generated embeddings for {cnt} / {len(filelst)} under dir {initdir}')
+    logger.info(f'[index_files] Generated embeddings for {cnt} / {len(filelst)} under dir {initdir}')
     if len(error_files) > 0:
-        print(f'              Files with problems:')
+        logger.warning(f'              Files with problems:')
         for f in error_files:
-            print(f'                 {f}')
+            logger.error(f'                 {f}')
     else:
-        print(f'              All files successfully processed')
+        logger.info(f'              All files successfully processed')
     
     pass  # end of function
-
-
+def create_collection_if_not_exists(collection_name):
+    try:
+        collection = Collection(collection_name)
+        logger.info(f"Collection already exists'{collection.name}' ")
+    except exceptions.SchemaNotReadyException:
+        field = FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=512)
+        primary_field = FieldSchema(name="id", dtype=DataType.INT64, is_primary=True)
+        schema = CollectionSchema(fields=[field, primary_field], description="Collection for embeddings")
+        try:
+            connections.connect(host='localhost', port='19530')  # Establish a connection to Milvus
+            collection = Collection(collection_name, schema=schema)
+            logger.info(f"Collection '{collection_name}' created successfully.")
+        except exceptions.MilvusException as e:
+            logger.error(f"Failed to create collection '{collection_name}': {e}")
+    
 if __name__ == "__main__":
 
     file_extensions = ['pdf', 'doc', 'docx', 'xlsx', 'xls', 'ppt', 'pptx', 'txt', 'csv']
@@ -156,12 +253,12 @@ if __name__ == "__main__":
     try:
         # Establish a connection to the Milvus server
         connections.connect(host='localhost', port='19530')
-        print("Successfully connected to Milvus server.")
+        logger.info("Successfully connected to Milvus server.")
         
      
         # define a collection name (it can be any name)
-        collection_name='testfiles_repo'
-
+        collection_name='testfiles_repso'
+     
         # visit directory structure and create list of files with given extensions
         filelst = list_files(dir, file_extensions)
     
@@ -170,7 +267,7 @@ if __name__ == "__main__":
         index_files_milvus(filelst, collection_name)
 
     except exceptions.MilvusException as e:
-        print(f"Failed to connect to Milvus server: {e}")
+          logger.error(f"Failed to connect to Milvus server: {e}")
 
     pass
 

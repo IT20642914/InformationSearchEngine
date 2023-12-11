@@ -3,3 +3,6 @@ langchain
 pymilvus
 milvus
 unstructured
+colorlog
+tiktoken
+sentence_transformers
